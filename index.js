@@ -1,9 +1,9 @@
 // node-pdf
 
 var Promise = require("es6-promise").Promise;
-
+const pLimit = require("p-limit");
 var path = require("path");
-var fs   = require("fs");
+var fs = require("fs");
 var util = require("util");
 var exec = require("child_process").exec;
 
@@ -22,26 +22,23 @@ function PDFImage(pdfFilePath, options) {
 }
 
 PDFImage.prototype = {
-  constructGetInfoCommand: function () {
-    return util.format(
-      "pdfinfo \"%s\"",
-      this.pdfFilePath
-    );
+  constructGetInfoCommand: function() {
+    return util.format('pdfinfo "%s"', this.pdfFilePath);
   },
-  parseGetInfoCommandOutput: function (output) {
+  parseGetInfoCommandOutput: function(output) {
     var info = {};
-    output.split("\n").forEach(function (line) {
+    output.split("\n").forEach(function(line) {
       if (line.match(/^(.*?):[ \t]*(.*)$/)) {
         info[RegExp.$1] = RegExp.$2;
       }
     });
     return info;
   },
-  getInfo: function () {
+  getInfo: function() {
     var self = this;
     var getInfoCommand = this.constructGetInfoCommand();
-    var promise = new Promise(function (resolve, reject) {
-      exec(getInfoCommand, function (err, stdout, stderr) {
+    var promise = new Promise(function(resolve, reject) {
+      exec(getInfoCommand, function(err, stdout, stderr) {
         if (err) {
           return reject({
             message: "Failed to get PDF'S information",
@@ -55,65 +52,71 @@ PDFImage.prototype = {
     });
     return promise;
   },
-  numberOfPages: function () {
-    return this.getInfo().then(function (info) {
+  numberOfPages: function() {
+    return this.getInfo().then(function(info) {
       return info["Pages"];
     });
   },
-  getOutputImagePathForPage: function (pageNumber) {
+  getOutputImagePathForPage: function(pageNumber) {
     return path.join(
       this.outputDirectory,
       this.pdfFileBaseName + "-" + pageNumber + "." + this.convertExtension
     );
   },
-  getOutputImagePathForFile: function () {
+  getOutputImagePathForFile: function() {
     return path.join(
       this.outputDirectory,
       this.pdfFileBaseName + "." + this.convertExtension
     );
   },
-  setConvertOptions: function (convertOptions) {
+  setConvertOptions: function(convertOptions) {
     this.convertOptions = convertOptions || {};
   },
   setPdfFileBaseName: function(pdfFileBaseName) {
-    this.pdfFileBaseName = pdfFileBaseName || path.basename(this.pdfFilePath, ".pdf");
+    this.pdfFileBaseName =
+      pdfFileBaseName || path.basename(this.pdfFilePath, ".pdf");
   },
-  setConvertExtension: function (convertExtension) {
+  setConvertExtension: function(convertExtension) {
     this.convertExtension = convertExtension || "png";
   },
-  constructConvertCommandForPage: function (pageNumber) {
+  constructConvertCommandForPage: function(pageNumber) {
     var pdfFilePath = this.pdfFilePath;
     var outputImagePath = this.getOutputImagePathForPage(pageNumber);
     var convertOptionsString = this.constructConvertOptions();
     return util.format(
-      "%s %s\"%s[%d]\" \"%s\"",
+      '%s %s"%s[%d]" "%s"',
       this.useGM ? "gm convert" : "convert",
       convertOptionsString ? convertOptionsString + " " : "",
-      pdfFilePath, pageNumber, outputImagePath
+      pdfFilePath,
+      pageNumber,
+      outputImagePath
     );
   },
-  constructCombineCommandForFile: function (imagePaths) {
+  constructCombineCommandForFile: function(imagePaths) {
     return util.format(
-      "%s -append %s \"%s\"",
+      '%s -append %s "%s"',
       this.useGM ? "gm convert" : "convert",
-      imagePaths.join(' '),
+      imagePaths.join(" "),
       this.getOutputImagePathForFile()
     );
   },
-  constructConvertOptions: function () {
-    return Object.keys(this.convertOptions).sort().map(function (optionName) {
-      if (this.convertOptions[optionName] !== null) {
-        return optionName + " " + this.convertOptions[optionName];
-      } else {
-        return optionName;
-      }
-    }, this).join(" ");
+  constructConvertOptions: function() {
+    return Object.keys(this.convertOptions)
+      .sort()
+      .map(function(optionName) {
+        if (this.convertOptions[optionName] !== null) {
+          return optionName + " " + this.convertOptions[optionName];
+        } else {
+          return optionName;
+        }
+      }, this)
+      .join(" ");
   },
   combineImages: function(imagePaths) {
     var pdfImage = this;
     var combineCommand = pdfImage.constructCombineCommandForFile(imagePaths);
-    return new Promise(function (resolve, reject) {
-      exec(combineCommand, function (err, stdout, stderr) {
+    return new Promise(function(resolve, reject) {
+      exec(combineCommand, function(err, stdout, stderr) {
         if (err) {
           return reject({
             message: "Failed to combine images",
@@ -122,52 +125,69 @@ PDFImage.prototype = {
             stderr: stderr
           });
         }
-        exec("rm "+imagePaths.join(' ')); //cleanUp
+        exec("rm " + imagePaths.join(" ")); //cleanUp
         return resolve(pdfImage.getOutputImagePathForFile());
       });
     });
   },
-  convertFile: function () {
+  convertFile: function(maxConcurrentTasks) {
+    let concurrency = 100; //allow only 100 concurrent page conversion in order to prevent high resources consumption
+    if (typeof maxConcurrentTasks !== "undefined") {
+      concurrency = maxConcurrentTasks;
+    }
+    const limit = pLimit(concurrency);
     var pdfImage = this;
-    return new Promise(function (resolve, reject) {
-      pdfImage.numberOfPages().then(function (totalPages) {
-        var convertPromise = new Promise(function (resolve, reject){
-          var imagePaths = [];
-          for (var i = 0; i < totalPages; i++) {
-            pdfImage.convertPage(i).then(function(imagePath){
-              imagePaths.push(imagePath);
-              if (imagePaths.length === parseInt(totalPages)){
-                imagePaths.sort(); //because of asyc pages we have to reSort pages
-                resolve(imagePaths);
-              }
-            }).catch(function(error){
-              reject(error);
-            });
+    return new Promise(function(resolve, reject) {
+      pdfImage.numberOfPages().then(function(totalPages) {
+        var convertPromise = new Promise(function(resolve, reject) {
+          let input = [];
+          for (let i = 0; i < totalPages; i++) {
+            input.push(
+              limit(() => {
+                return pdfImage.convertPage(i);
+              })
+            );
           }
+
+          (async () => {
+            // Only three promises are run at once (as defined above)
+            await Promise.all(input)
+              .catch(err => {
+                console.error(err);
+                reject(err);
+              })
+              .then(function(val) {
+                resolve(val);
+              });
+          })();
         });
 
-        convertPromise.then(function(imagePaths){
-          if (pdfImage.combinedImage){
-            pdfImage.combineImages(imagePaths).then(function(imagePath){
-              resolve(imagePath);
-            });
-          } else {
-            resolve(imagePaths);
-          }
-        }).catch(function(error){
-          reject(error);
-        });
+        convertPromise
+          .then(function(imagePaths) {
+            if (pdfImage.combinedImage) {
+              pdfImage.combineImages(imagePaths).then(function(imagePath) {
+                resolve(imagePath);
+              });
+            } else {
+              imagePaths.sort(); //because of asyc pages we have to reSort pages
+              console.log(imagePaths);
+              resolve(imagePaths);
+            }
+          })
+          .catch(function(error) {
+            reject(error);
+          });
       });
     });
   },
-  convertPage: function (pageNumber) {
-    var pdfFilePath     = this.pdfFilePath;
+  convertPage: function(pageNumber) {
+    var pdfFilePath = this.pdfFilePath;
     var outputImagePath = this.getOutputImagePathForPage(pageNumber);
-    var convertCommand  = this.constructConvertCommandForPage(pageNumber);
+    var convertCommand = this.constructConvertCommandForPage(pageNumber);
 
-    var promise = new Promise(function (resolve, reject) {
+    var promise = new Promise(function(resolve, reject) {
       function convertPageToImage() {
-        exec(convertCommand, function (err, stdout, stderr) {
+        exec(convertCommand, function(err, stdout, stderr) {
           if (err) {
             return reject({
               message: "Failed to convert page to image",
@@ -180,7 +200,7 @@ PDFImage.prototype = {
         });
       }
 
-      fs.stat(outputImagePath, function (err, imageFileStat) {
+      fs.stat(outputImagePath, function(err, imageFileStat) {
         var imageNotExists = err && err.code === "ENOENT";
         if (!imageNotExists && err) {
           return reject({
@@ -199,7 +219,7 @@ PDFImage.prototype = {
         }
 
         // image exist. check timestamp.
-        fs.stat(pdfFilePath, function (err, pdfFileStat) {
+        fs.stat(pdfFilePath, function(err, pdfFileStat) {
           if (err) {
             return reject({
               message: "Failed to stat PDF file",
@@ -221,4 +241,4 @@ PDFImage.prototype = {
   }
 };
 
-exports.PDFImage = PDFImage;
+module.exports.PDFImage = PDFImage;
