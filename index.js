@@ -17,6 +17,7 @@ function PDFImage(pdfFilePath, options) {
   this.setConvertExtension(options.convertExtension);
   this.useGM = options.graphicsMagick || false;
   this.combinedImage = options.combinedImage || false;
+  this.isLambda = options.isLambda || false;
 
   this.outputDirectory = options.outputDirectory || path.dirname(pdfFilePath);
 }
@@ -85,7 +86,11 @@ PDFImage.prototype = {
     var convertOptionsString = this.constructConvertOptions();
     return util.format(
       '%s %s"%s[%d]" "%s"',
-      this.useGM ? "gm convert" : "convert",
+      this.useGM
+        ? "gm convert"
+        : this.isLambda
+        ? "/opt/bin/convert"
+        : "convert",
       convertOptionsString ? convertOptionsString + " " : "",
       pdfFilePath,
       pageNumber,
@@ -95,7 +100,11 @@ PDFImage.prototype = {
   constructCombineCommandForFile: function(imagePaths) {
     return util.format(
       '%s -append %s "%s"',
-      this.useGM ? "gm convert" : "convert",
+      this.useGM
+        ? "gm convert"
+        : this.isLambda
+        ? "/opt/bin/convert"
+        : "convert",
       imagePaths.join(" "),
       this.getOutputImagePathForFile()
     );
